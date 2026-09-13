@@ -1,0 +1,13 @@
+[workspace]
+members = ["rust/core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+
+[workspace.dependencies]
+revm = { version = "=43.0.2", default-features = false, features = ["std"] }
+sevm-revm-core = { path = "rust/core" }
