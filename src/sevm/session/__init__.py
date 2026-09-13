@@ -17,6 +17,7 @@ Where things live:
   core.py         `DebugSession`: the threads, the frame stack, the per-opcode hook
   code.py         resolving running bytecode back to the source it came from
   patch.py        the `apply_computation` monkeypatch and its opcode loop
+  revm.py         the source-level session backed by the Rust engine
   stepping.py     when a step stops; when a watchpoint fires
   snapshots.py    building the `FrameSnapshot` the UI renders
   framelocals.py  recovering Solidity locals from the EVM stack
@@ -35,6 +36,7 @@ from .events import (
     SessionError,
     StepMode,
 )
+from .revm import RevmDebugSession
 from .snapshots import SNAPSHOT_MEMORY_LIMIT
 
 __all__ = [
@@ -45,6 +47,7 @@ __all__ = [
     "Inspect",
     "Paused",
     "Resume",
+    "RevmDebugSession",
     "SessionError",
     "StepMode",
 ]
