@@ -617,6 +617,7 @@ an `overrides` line so a stale environment variable cannot hide.
 | [docs/expressions.md](docs/expressions.md) | evaluating Solidity, reading and writing local variables |
 | [docs/assembly.md](docs/assembly.md) | Yul builtins at the prompt, what is refused and why |
 | [docs/foundry.md](docs/foundry.md) | projects, library install, the build cache, cheatcodes |
+| [docs/headless.md](docs/headless.md) | experimental REVM engine protocol for external frontends |
 
 ## Development
 
