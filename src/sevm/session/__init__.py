@@ -16,6 +16,7 @@ Where things live:
   events.py       the messages the two threads exchange
   code.py         resolving running bytecode back to the source it came from
   revm.py         `DebugSession`: source stepping backed by the Rust engine
+  provenance.py   optional opcode recording and stack origin tracing
   snapshots.py    building source-level backtraces for `FrameSnapshot`
   framelocals.py  recovering Solidity locals from the EVM stack
 """

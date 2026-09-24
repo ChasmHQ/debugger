@@ -29,7 +29,7 @@ def cmd_set(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult
 
     # A bare local name is a stack slot, not storage, and has to be written as one.
     if re.fullmatch(r"[A-Za-z_$][\w$]*", lhs) and proc.is_local(lhs):
-        value = int(proc.evaluate(rhs).value)
+        value = _rhs_value(proc, rhs)
         written = proc.inspect(
             "write_local", lhs, value, internal_index=proc.selected_internal
         )
@@ -51,8 +51,21 @@ def cmd_set(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult
         )
 
 
+def _rhs_value(proc: CommandProcessor, rhs: str) -> int:
+    """A decimal or 0x-hex literal parses without solc; anything else evaluates.
+
+    The fast path is not just cheaper: a bare `0x` literal of address or bytes
+    width is not a valid Solidity expression, so `set $stack[0] = 0x<address>`
+    would fail outright instead of writing the value.
+    """
+    text = rhs.strip()
+    if re.fullmatch(r"0[xX][0-9a-fA-F]+|\d+", text):
+        return _integer(text, "set")
+    return int(proc.evaluate(text).value)
+
+
 def _set_convenience(proc: CommandProcessor, lhs: str, rhs: str) -> CommandResult:
-    value = int(proc.evaluate(rhs).value)
+    value = _rhs_value(proc, rhs)
     name = lhs[1:]
     if name == "pc":
         proc.inspect("set_pc", value)
