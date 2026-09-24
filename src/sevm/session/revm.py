@@ -499,7 +499,11 @@ class RevmDebugSession:
         raise TestFailed(f"{what} reverted: {self.last_revert}")
 
     def _drive_transaction(self) -> dict[str, Any]:
+        # REVM starts a fresh EVM call stack for every transaction. A prior call's
+        # Solidity internal frames must not be reused for this transaction's pc.
+        self._frames.clear()
         self._last_raw = None
+        self._raw_snapshot = None
         self.provenance.clear()
         while True:
             event = self._chain.wait(timeout=30.0)
@@ -1023,16 +1027,11 @@ class RevmDebugSession:
         if (
             function is not None
             and frame.internal
+            and frame.internal[-1].function is not None
+            and function.ast_id == frame.internal[-1].function.ast_id
             and loc.entry.start == function.start
             and loc.entry.length == function.length
-            and (
-                frame.internal[-1].function is None
-                or function.ast_id == frame.internal[-1].function.ast_id
-            )
         ):
-            # The dispatcher can reach a source-mapped wrapper through a generated
-            # frame. Its jump into the actual body is an entry, not a nested call.
-            frame.internal[-1].function = function
             frame.internal[-1].entry_pc = destination
             frame.internal[-1].entry_sp = len(raw["stack"])
             return
