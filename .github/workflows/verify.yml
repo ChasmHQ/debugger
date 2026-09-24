@@ -15,5 +15,12 @@ jobs:
       - run: uv run ruff check src tests examples
       - run: uv run ruff format --check src tests examples
       - run: uv run mypy src
+      - run: uv run pytest -q tests/test_stepping.py::test_loop_iterates_with_next
       - run: uv run pytest -q
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace --locked
