@@ -138,6 +138,7 @@ class DebugDriver:
         # root unless it sits inside a Foundry project.
         from ..cli import _find_contracts_dir, _run_script
         from ..foundry import prepare_project
+        from ..provider import RevmWeb3Driver
 
         contracts_dir = _find_contracts_dir(script, contracts)
         if not os.path.isdir(contracts_dir):
@@ -168,12 +169,14 @@ class DebugDriver:
         expanded = expand_file_args(list(args), " ".join(args))
         if isinstance(expanded, str):
             raise DriverError(expanded)
-        target_fn = _run_script(script, expanded)
+
+        def restart_factory(argv: list[str]) -> RevmWeb3Driver:
+            return RevmWeb3Driver(_run_script(script, argv))
+
         return self._wire(
             project,
-            target_fn,
-            foundry_mode=True,
-            restart_factory=lambda argv: _run_script(script, argv),
+            restart_factory(expanded),
+            restart_factory=restart_factory,
             restart_argv=expanded,
         )
 
@@ -188,7 +191,7 @@ class DebugDriver:
         from ..foundry import (
             compile_test,
             discover_tests,
-            make_tests_driver,
+            make_revm_tests_driver,
             prepare_project,
             select_tests,
         )
@@ -217,11 +220,10 @@ class DebugDriver:
         self._notice(
             "debugging " + ", ".join(f"{t.contract}.{t.function}" for t in selected)
         )
-        driver_fn = make_tests_driver(project, selected)
+        driver_fn = make_revm_tests_driver(project, selected)
         return self._wire(
             project,
             driver_fn,
-            foundry_mode=True,
             stop_functions=[f"{t.contract}.{t.function}" for t in selected],
         )
 
@@ -229,13 +231,11 @@ class DebugDriver:
         self,
         project: Any,
         target: Any,
-        foundry_mode: bool,
         stop_functions: list[str] | None = None,
         restart_factory: Any = None,
         restart_argv: list[str] | None = None,
     ) -> dict[str, Any]:
         session = DebugSession(project)
-        session.foundry_mode = foundry_mode
         evaluator = Evaluator(project)
         session.set_eval_hook(make_eval_hook(evaluator))
         if restart_factory is not None:
@@ -280,10 +280,7 @@ class DebugDriver:
         with self._lock:
             if self._session is None:
                 return {"stopped_session": False}
-            try:
-                self._session.detach()
-            except Exception:
-                self._session.uninstall()
+            self._session.detach()
             self._session = None
             self._processor = None
             self._target_path = None
@@ -310,6 +307,10 @@ class DebugDriver:
     def status(self) -> dict[str, Any]:
         with self._lock:
             session, _ = self._require()
+            if session.finished:
+                return self._report(
+                    Finished(ok=session.exit_error is None, error=session.exit_error)
+                )
             return self._report(session.last_snapshot)
 
     # -- navigation --------------------------------------------------------
@@ -685,56 +686,9 @@ class DebugDriver:
                 ],
             }
 
-    # -- checkpoints ---------------------------------------------------------
-
-    def save_checkpoint(self, name: str = "last") -> dict[str, Any]:
-        with self._lock:
-            session, _ = self._require()
-            self._require_snapshot()
-            info = session.inspect("save_checkpoint", name)
-            return info
-
-    def _restore(self, name: str) -> dict[str, Any]:
-        """Shared restore: roll back, refresh, and square the snapshot's pc.
-
-        Right after a restore the live CodeStream sits pre-read, so a refreshed
-        snapshot reports `program_counter - 1` — one below the opcode that will
-        actually run. The checkpoint's boundary pc is the truth; patch it in.
-        """
-        from dataclasses import replace as dc_replace
-
-        session, _ = self._require()
-        info = session.inspect("restore_checkpoint", name)
-        session.refresh_snapshot()
-        self._prev_snapshot = None
-        snap = session.last_snapshot
-        if snap is not None and info.get("pc") is not None:
-            session.last_snapshot = dc_replace(snap, pc=info["pc"])
-        return info
-
-    def restore_checkpoint(self, name: str = "last") -> dict[str, Any]:
-        """Roll back to a checkpoint; returns the stop report at the restored stop."""
-        with self._lock:
-            session, _ = self._require()
-            if session.finished:
-                raise DriverError(
-                    "cannot restore: the program already finished (its frames are "
-                    "gone); restart the session and re-reach the stop"
-                )
-            self._require_snapshot()
-            info = self._restore(name)
-            report = self._report(session.last_snapshot)
-            report["restore"] = info
-            return report
-
-    def list_checkpoints(self) -> dict[str, Any]:
-        session, _ = self._require()
-        return {"checkpoints": session.checkpoints.listing()}
-
-    # -- provenance & trace ---------------------------------------------------
+    # -- provenance & trace ------------------------------------------------
 
     def set_provenance(self, enabled: bool) -> dict[str, Any]:
-        """Turn per-opcode recording on/off; the switch applies from now on."""
         with self._lock:
             session, _ = self._require()
             session.provenance.enabled = bool(enabled)
@@ -745,7 +699,6 @@ class DebugDriver:
             }
 
     def why_stack(self, index_from_top: int) -> dict[str, Any]:
-        """Trace a current stack slot back through the recording to its origins."""
         with self._lock:
             session, _ = self._require()
             snap = self._require_snapshot()
@@ -757,18 +710,14 @@ class DebugDriver:
                 )
             from ..session.provenance import why_stack as slice_stack
 
-            bottom_up = tuple(int(entry.value) for entry in reversed(snap.stack))
+            bottom_up = tuple(entry.value for entry in reversed(snap.stack))
             result = slice_stack(prov.records, snap.depth, bottom_up, int(index_from_top))
             result["stack_index"] = int(index_from_top)
             return result
 
     def export_trace(
-        self,
-        path: str | None = None,
-        offset: int = 0,
-        limit: int = 500,
+        self, path: str | None = None, offset: int = 0, limit: int = 500
     ) -> dict[str, Any]:
-        """Export the recording as anvil/geth structLog JSON (windowed, or to a file)."""
         with self._lock:
             session, _ = self._require()
             prov = session.provenance
@@ -787,108 +736,7 @@ class DebugDriver:
                     "total": full["total"],
                     "written": len(full["structLogs"]),
                 }
-            window = prov.structlog(max(0, offset), max(1, min(limit, 2000)))
-            return window
-
-    # -- batch experiments -----------------------------------------------------
-
-    def run_experiments(
-        self, experiments: list[dict[str, Any]], base_checkpoint: str = "auto"
-    ) -> dict[str, Any]:
-        """Branch-search from one deep stop: mutate -> run -> read, per experiment.
-
-        Each experiment: {set_stack?: {index: value}, set_gas?: int,
-        write_memory?: {offset: hex}, run_until_pc?: int, continue_to_stop?: bool,
-        read_stack?: int}. The base checkpoint is saved once and restored before
-        every experiment, so 32 variants cost one prefix. An experiment that lets
-        the program finish ends the batch (restore becomes impossible); order
-        risky ones last.
-        """
-        with self._lock:
-            session, _ = self._require()
-            self._require_snapshot()
-            if not experiments:
-                raise DriverError("no experiments given")
-            if len(experiments) > 32:
-                raise DriverError("at most 32 experiments per call")
-            from sevm.session import StepMode
-
-            checkpoint_name = (
-                base_checkpoint if base_checkpoint != "auto" else "batch-base"
-            )
-            session.inspect("save_checkpoint", checkpoint_name)
-            results: list[dict[str, Any]] = []
-            aborted: str | None = None
-            try:
-                for number, experiment in enumerate(experiments):
-                    session.inspect("restore_checkpoint", checkpoint_name)
-                    session.refresh_snapshot()
-                    applied: dict[str, Any] = {}
-                    for index, value in (experiment.get("set_stack") or {}).items():
-                        session.inspect("write_stack", int(index), int(str(value), 0))
-                    if experiment.get("set_gas") is not None:
-                        session.inspect("set_gas", int(str(experiment["set_gas"]), 0))
-                    for offset, hex_data in (
-                        experiment.get("write_memory") or {}
-                    ).items():
-                        cleaned = str(hex_data).lower().removeprefix("0x")
-                        if not cleaned or len(cleaned) % 2:
-                            raise DriverError(f"not hex data: {hex_data!r}")
-                        session.inspect(
-                            "write_memory", int(offset), bytes.fromhex(cleaned)
-                        )
-                    applied = {
-                        "set_stack": experiment.get("set_stack") or {},
-                        "set_gas": experiment.get("set_gas"),
-                        "write_memory": experiment.get("write_memory") or {},
-                    }
-                    if experiment.get("run_until_pc") is not None:
-                        event = session.resume(
-                            StepMode.UNTIL,
-                            target_pc=int(experiment["run_until_pc"]),
-                            timeout=self.timeout,
-                        )
-                    else:
-                        event = session.resume(StepMode.RUN, timeout=self.timeout)
-                    if event is None:
-                        results.append({"experiment": number, "error": "timed out"})
-                        continue
-                    from ..session import Finished
-
-                    if isinstance(event, Finished):
-                        aborted = (
-                            f"experiment {number} let the program finish "
-                            f"({'ok' if event.ok else event.error}); the batch "
-                            "stopped because a finished run cannot be restored — "
-                            "restart and re-reach the stop"
-                        )
-                        break
-                    session.refresh_snapshot()
-                    self._prev_snapshot = None
-                    report = self._report(session.last_snapshot)
-                    report["experiment"] = number
-                    report["applied"] = applied
-                    if experiment.get("read_stack"):
-                        report["stack"] = self.read_stack(
-                            0, int(experiment["read_stack"])
-                        )["items"]
-                    results.append(report)
-            finally:
-                if aborted is None:
-                    try:
-                        self._restore(checkpoint_name)
-                    finally:
-                        session.checkpoints.discard_after(checkpoint_name)
-                        session.checkpoints._by_name.pop(checkpoint_name, None)
-            out: dict[str, Any] = {
-                "items": results,
-                "total": len(results),
-                "truncated": False,
-                "base_restored": aborted is None,
-            }
-            if aborted:
-                out["aborted"] = aborted
-            return out
+            return prov.structlog(max(0, offset), max(1, min(limit, 2000)))
 
     # -- parity ------------------------------------------------------------
 

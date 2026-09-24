@@ -16,7 +16,7 @@ from mcp.server.mcpserver import MCPServer
 
 from .driver import DebugDriver, DriverError
 
-INSTRUCTIONS = """sevm: a gdb-style Solidity/EVM debugger running on Py-EVM.
+INSTRUCTIONS = """sevm: a gdb-style Solidity/EVM debugger running on REVM.
 
 Workflow: sevm_start_session (a web3.py driver script or a .t.sol Foundry test)
 loads and compiles the target and stops at the first contract instruction.
@@ -38,8 +38,9 @@ pops with values, changed memory ranges, gas spent).
 
 def _call(driver: DebugDriver, fn: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
-        method = getattr(driver, fn)
-        return method(*args, **kwargs)
+        with driver._lock:
+            method = getattr(driver, fn)
+            return method(*args, **kwargs)
     except DriverError as exc:
         return {"error": str(exc)}
     except Exception as exc:  # a bug must not kill the server
@@ -89,6 +90,8 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
             match=match,
             match_contract=match_contract,
             timeout=timeout,
+            reference_runtime_hex=reference_runtime_hex,
+            provenance=provenance,
         )
 
     @server.tool()
@@ -317,29 +320,6 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         `watch`, `tbreak`, `x/32xb 0x40`... Returns plain-text lines."""
         return await _run(driver, "command", line)
 
-    # -- checkpoints ---------------------------------------------------------
-
-    @server.tool()
-    async def sevm_save_checkpoint(name: str = "last") -> dict:
-        """Capture the current stop: frame state, storage journal, bookkeeping.
-
-        Experiment freely (mutations, jumps, even continue-and-stop); restore
-        rolls everything back without re-running the script prefix. Restoring
-        discards checkpoints saved after the restored one, and only works while
-        the frame stack is the one saved (finish out of calls made after the
-        checkpoint before restoring)."""
-        return await _run(driver, "save_checkpoint", name)
-
-    @server.tool()
-    async def sevm_restore_checkpoint(name: str = "last") -> dict:
-        """Roll the live run back to a checkpoint; returns the stop report there."""
-        return await _run(driver, "restore_checkpoint", name)
-
-    @server.tool()
-    async def sevm_list_checkpoints() -> dict:
-        """Saved checkpoints with their positions and restore counts."""
-        return await _run(driver, "list_checkpoints")
-
     # -- provenance & trace ---------------------------------------------------
 
     @server.tool()
@@ -362,22 +342,6 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         debug_traceTransaction shape). `path` writes the whole trace to a file;
         otherwise returns a windowed slice {items, total, truncated}."""
         return await _run(driver, "export_trace", path, offset, limit)
-
-    # -- batch experiments -----------------------------------------------------
-
-    @server.tool()
-    async def sevm_run_experiments(
-        experiments: list[dict], base_checkpoint: str = "auto"
-    ) -> dict:
-        """Branch-search from one deep stop without replaying the prefix.
-
-        Saves a base checkpoint, then per experiment (max 32): restore base,
-        apply {set_stack: {index: value}, set_gas, write_memory: {offset: hex}},
-        run (run_until_pc, or continue to the next stop), and report the stop
-        with the requested stack window (read_stack: N). Returns
-        {items, total, base_restored}; order experiments that might finish the
-        program last — a finished run cannot be restored."""
-        return await _run(driver, "run_experiments", experiments, base_checkpoint)
 
     # -- parity ----------------------------------------------------------------
 

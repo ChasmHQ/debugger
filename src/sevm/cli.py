@@ -2,8 +2,8 @@
 
 By decision, the debugger attaches to the user's own script rather than owning the
 setup. The script drives web3 exactly as it already does; sevm compiles the contracts,
-patches Py-EVM process-wide, runs the script on the VM thread, and stops the first time
-execution enters code it recognises.
+temporarily supplies its REVM-backed Web3 provider, runs the script on the VM thread, and
+stops the first time execution enters code it recognises.
 
 Recognition is by bytecode, not by configuration: every contract under --contracts is
 compiled, and a deployed account's runtime code is matched against those artifacts with
@@ -56,7 +56,7 @@ def _run_script(path: str, argv: Sequence[str]):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sevm",
-        description="A gdb-style interactive Solidity/EVM debugger running on Py-EVM.",
+        description="A gdb-style interactive Solidity/EVM debugger.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -137,7 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--force", action="store_true", help="recompile even if the cache has this build"
     )
-
     compile_cmd = sub.add_parser(
         "compile", help="compile contracts and report what sevm sees"
     )
@@ -302,6 +301,7 @@ def _warn_if_declined(console: Any, prepared: Any) -> None:
 
 def _run_python(console: Any, args: argparse.Namespace) -> int:
     from .foundry import prepare_project
+    from .provider import RevmWeb3Driver
 
     script = args.script
     contracts = _find_contracts_dir(script, args.contracts)
@@ -359,15 +359,19 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
     if isinstance(expanded, str):
         console.print(f"[bold red]{expanded}[/bold red]", highlight=False)
         return 1
-    target = _run_script(script, expanded)
+
+    def restart_factory(argv: list[str]) -> Any:
+        return RevmWeb3Driver(_run_script(script, argv))
+
+    target = restart_factory(expanded)
     return _debug(
         console,
         project,
         target,
         args,
-        foundry_mode=True,
-        restart_factory=lambda argv: _run_script(script, argv),
+        restart_factory=restart_factory,
         restart_argv=expanded,
+        session_class=DebugSession,
     )
 
 
@@ -375,7 +379,7 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     from .foundry import (
         compile_test,
         discover_tests,
-        make_tests_driver,
+        make_revm_tests_driver,
         prepare_project,
         select_tests,
     )
@@ -421,14 +425,14 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     console.print(
         f"[dim]debugging {len(selected)} test(s): {names}[/dim]", highlight=False
     )
-    driver = make_tests_driver(project, selected)
+    driver = make_revm_tests_driver(project, selected)
     return _debug(
         console,
         project,
         driver,
         args,
-        foundry_mode=True,
         stop_functions=[f"{t.contract}.{t.function}" for t in selected],
+        session_class=DebugSession,
     )
 
 
@@ -437,10 +441,10 @@ def _debug(
     project: Any,
     target: Any,
     args: argparse.Namespace,
-    foundry_mode: bool,
     stop_functions: list[str] | None = None,
     restart_factory: Any = None,
     restart_argv: list[str] | None = None,
+    session_class: Any = DebugSession,
 ) -> int:
     """Shared tail: start the target on the VM thread and hand off to a frontend.
 
@@ -448,8 +452,7 @@ def _debug(
     past deployment and `setUp` and opens at the first one; `continue` then stops at each
     subsequent test in turn. `restart_factory` binds the `reset` / `run` commands.
     """
-    session = DebugSession(project)
-    session.foundry_mode = foundry_mode
+    session = session_class(project)
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     if restart_factory is not None:

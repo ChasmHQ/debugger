@@ -153,7 +153,7 @@ class StepRecord:
     gas_before: int
     gas_remaining: int
     mem_size: int
-    before: tuple  # stack bottom-up; values[-1] is the top, py-evm orientation
+    before: tuple  # stack bottom-up; values[-1] is the top
     after: tuple
 
 
@@ -309,8 +309,8 @@ def why_stack(
 ) -> dict[str, Any]:
     """Trace one current stack slot back to its origins.
 
-    `stack_bottom_up` is the live stack in py-evm orientation (values[-1] is the
-    top); `index_from_top` is the gdb convention ($stack[0] = top).
+    `stack_bottom_up` has the top value last; `index_from_top` is the gdb
+    convention ($stack[0] = top).
     """
     if not records:
         return {"origins": [{"kind": "unknown", "detail": "recording is off"}]}
@@ -345,6 +345,7 @@ def why_stack(
                 pops = height_before - height_after if height_before > height_after else 0
             pushed_base = height_before - pops
         else:
+            pops = 0
             pushed_base = height_before
 
         next_frontier: dict[int, _Target] = {}

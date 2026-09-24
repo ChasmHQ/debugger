@@ -2,9 +2,12 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+src/sevm/_revm*.so
+src/sevm/_revm*.pyd
 .eggs/
 build/
 dist/
+target/
 
 # Virtual envs / uv
 .venv/

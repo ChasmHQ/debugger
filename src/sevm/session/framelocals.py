@@ -1,7 +1,7 @@
 """Recovering a Solidity frame's local variables from the EVM stack.
 
 Locals have no runtime representation: their stack position is inferred from where solc's
-source map says each declaration executed, which `DebugSession._observe_declaration`
+source map says each declaration executed, which `RevmDebugSession._advance_internal`
 records as the program runs. This module turns those positions back into values.
 """
 
@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..frames import EvmFrame, stack_int
-from ..locals import LocalsIndex, LocalValue, read_local
+from ..locals import LocalsIndex, LocalValue, LocalVar, read_local
 
 
 def read_frame_locals(
@@ -72,12 +72,16 @@ def read_frame_locals(
     # A modifier's locals sit in this same frame, so anything recorded here that the
     # function does not own is a modifier's, and the scope check below decides
     # whether the user is currently standing inside that modifier's body.
-    extra: list[Any] = []
+    extra: list[LocalVar] = []
     for ast_id in internal.slots:
-        var = index.by_ast_id(ast_id)
-        if var is not None and var.function_id != fn.ast_id and var.visible_at(offset):
-            positions[var.ast_id] = internal.slots[ast_id]
-            extra.append(var)
+        extra_var = index.by_ast_id(ast_id)
+        if (
+            extra_var is not None
+            and extra_var.function_id != fn.ast_id
+            and extra_var.visible_at(offset)
+        ):
+            positions[extra_var.ast_id] = internal.slots[ast_id]
+            extra.append(extra_var)
 
     out: list[LocalValue] = []
     candidates = [v for v in index.visible(fn.ast_id, offset) if v.name]
@@ -85,7 +89,13 @@ def read_frame_locals(
         base = positions.get(var.ast_id)
         width = var.slots
         if base is None:
-            out.append(_unavailable(var, "not allocated yet at this instruction"))
+            declaration = frame.decl_pcs.get(pc_here) if frame.decl_pcs else None
+            reason = (
+                "this instruction allocates it; step once to see it"
+                if declaration is not None and declaration.ast_id == var.ast_id
+                else "not allocated yet at this instruction"
+            )
+            out.append(_unavailable(var, reason))
             continue
         if width is None:
             out.append(_unavailable(var, f"unknown stack width for {var.display_type}"))

@@ -1,11 +1,13 @@
 # sevm
 
-`sevm` is an interactive, gdb-style Solidity/EVM debugger on Py-EVM, built for red-team dynamic analysis.
+`sevm` is an interactive, gdb-style Solidity/EVM debugger on REVM, built for red-team dynamic analysis.
 
 - **Full control**: Stepping through Solidity is only half of what this debugger does. Here you are `root` on the EVM, free to rewrite state, the stack, memory, storage, and gas while the transaction is still live.
 - **Go low or high level**: Whether you are checking invariants with the source in hand, or dropping into raw EVM to build a jump-oriented programming (JOP) chain from a contract's bytecode, sevm handles both.
 - **See everything**: No source, no problem. sevm maps every public function and the flow through it, wired into the decompiled output, so you can see what storage and memory changed at each step.
 - **Foundry compatible**: Use Foundry cheatcodes while debugging.
+- **Frontend-independent**: Drive the Rust engine through the bundled JSON-RPC process
+  from an editor, web service, terminal UI, or any other client.
 
 ![screenshot](./assets/screenshot.png)
 
@@ -14,6 +16,7 @@
 - [Usage](#usage)
   - [Debug a Foundry test](#debug-a-foundry-test)
   - [Debug a web3.py script](#debug-a-web3py-script)
+  - [Connect another frontend](#connect-another-frontend)
   - [Re-run with new calldata](#re-run-with-new-calldata)
   - [Set breakpoints](#set-breakpoints)
   - [Inspect the frame](#inspect-the-frame)
@@ -48,13 +51,13 @@ pipx install uv
 uv tool install .
 ```
 
-sevm needs Python 3.10+ and `git`, and it downloads solc itself, into `~/.solcx`, picking the
-build for this machine. x86-64 and arm64 Linux, Intel and Apple silicon macOS, and
-Windows are all covered, and a solc already installed by Foundry (`~/.svm`) or sitting on
-`PATH` is used instead of a download. Anywhere else, on musl systems like Alpine, NixOS, or
-an architecture Solidity does not publish for, sevm falls back to solc's WebAssembly
-build, which needs `node` on PATH (or named by `SEVM_NODE`). Failing that, point sevm at a
-compiler you have:
+Building from this checkout needs Python 3.10+, Rust 1.91+, and `git`. sevm downloads solc
+itself into `~/.solcx`, picking the build for this machine. x86-64 and arm64 Linux, Intel
+and Apple silicon macOS, and Windows are covered, and a solc already installed by Foundry
+(`~/.svm`) or sitting on `PATH` is used instead. Anywhere else, on musl systems like
+Alpine, NixOS, or an architecture Solidity does not publish for, sevm falls back to
+solc's WebAssembly build, which needs `node` on PATH (or named by `SEVM_NODE`). Failing
+that, point sevm at a compiler you have:
 
 ```bash
 sevm compile --solc-binary /usr/bin/solc examples/bank/src
@@ -111,10 +114,10 @@ Inside a project with a `foundry.toml`, nothing is fetched. The project's `remap
 
 ### Debug a web3.py script
 
-`sevm run` also takes a plain web3.py script, the kind that deploys and calls contracts
-against an in-process Py-EVM chain. It runs unmodified: sevm compiles the contracts,
-patches Py-EVM, runs the script on a worker thread, and stops the first time execution
-enters code it recognises:
+`sevm run` also takes a plain web3.py script. A script that constructs
+`EthereumTesterProvider` runs unmodified: while the driver is active, sevm supplies its
+REVM-backed provider, runs the script on a worker thread, and stops the first time
+execution enters code it recognises:
 
 ```bash
 $ sevm run --console --contracts examples/bank/src examples/debug_bank.py
@@ -135,6 +138,21 @@ it:
 ```bash
 sevm run -x 'b _credit' -x c --contracts examples/bank/src examples/debug_bank.py
 ```
+
+### Connect another frontend
+
+`sevm-engine` exposes the same Rust debugger core as JSON-RPC 2.0 over newline-delimited
+standard input and output. A frontend can own presentation and process lifecycle without
+embedding Python or depending on the console or TUI:
+
+```bash
+sevm-engine < examples/headless-session.jsonl
+```
+
+The protocol supports persistent chains, transactions, stepping, breakpoints, snapshots,
+stack/memory/storage writes, expression execution, host calls, and Foundry prank state.
+See [docs/headless.md](docs/headless.md) for the versioned protocol and a complete request
+stream.
 
 ### Re-run with new calldata
 
@@ -385,9 +403,10 @@ Set the gas counter to whatever you need and let the transaction run into the wa
 (sevm) set $gas = 100
 $gas = 100
 (sevm) c
-Stopped on error: OutOfGas: Out of gas: Needed 2100 - Remaining 67 - Reason: SLOAD
+Stopped on error: OutOfGas: out of gas; `set $gas = N` then `c` retries this instruction
   Bank._fee(uint256) at src/Bank.sol:41
   41          return (amount * feeBps) / 10000;
+pc 0x0a75  SLOAD   sp 1->12  gas 32  step 592
 ```
 
 The same stop is also the way **out** of an out-of-gas you did not plan: refill the
@@ -457,7 +476,7 @@ overloads that forge-std's own `assertEq` and friends call into.
 
 ### Use Foundry cheatcodes
 
-Cheatcodes run against live Py-EVM state, both from inside the test and typed at the prompt
+Cheatcodes run against live REVM state, both from inside the test and typed at the prompt
 against the frame you are stopped in:
 
 ```bash
@@ -493,18 +512,18 @@ and fuzz or invariant argument generation.
 
 ### Run Yul at the prompt
 
-Type a Yul builtin and it runs on the paused frame through Py-EVM's own opcode
+Type a Yul builtin and it runs on the paused frame through REVM's opcode
 implementations. This is the low-level twin of `set var`:
 
 ```bash
 (sevm) mload(0x40)
-mload(0x40) -> $1 = 0x80 (128)  (gas 3)
+mload(0x40) -> $1 = 0x80 (128)  (gas 12)
 (sevm) sstore(3, add(sload(3), 1))
 sstore(3, add(sload(3), 1)) -> ok  (gas 22,103)
 (sevm) asm mstore(0x80, 1); mstore8(0xa0, 0x61); mload(0x80)
-mstore(0x80, 1) -> ok  (gas 9)
-mstore8(0xa0, 0x61) -> ok  (gas 6)
-mload(0x80) -> $2 = 0x1 (1)  (gas 3)
+mstore(0x80, 1) -> ok  (gas 18)
+mstore8(0xa0, 0x61) -> ok  (gas 21)
+mload(0x80) -> $2 = 0x1 (1)  (gas 18)
 ```
 
 Gas is metered, reported, and then handed back, so poking at the machine cannot turn a
@@ -553,27 +572,20 @@ implementation's JUMPDEST behind it, which is the pc every caller converges on. 
 
 ### Find a gadget
 
-`find HEX` reports every offset in the running code where the byte pattern occurs, with
-the context a jump-oriented chain needs — instruction alignment and the nearest preceding
-JUMPDEST, the address an indirect jump can actually reach:
+`find HEX` reports every offset in the running code where the byte pattern occurs. Each
+hit includes instruction alignment and the nearest preceding JUMPDEST:
 
 ```bash
-(sevm) find 5b50505050
-2 occurrence(s) of 5b50505050 in Counter
-  0x0184  JUMPDEST  (JUMPDEST, jump via 0x0184)
-  0x0279  5b50505050  (inside operand, jump via 0x0210)
+(sevm) find 5b
 ```
 
 ### Debug from an AI client (MCP)
 
-`sevm mcp` serves the whole debugger over the Model Context Protocol (stdio) — the third
-frontend after the console and the TUI, shaped for a consumer that cannot scroll panes or
-watch them change: windowed reads with explicit truncation, a uniform stop report after
-every navigation, and a diff of what the last step changed. It also carries the
-AI-oriented machinery end to end: checkpoints (`snap`/`restore`), operand provenance
-(`why N` traces a stack slot to its entry-slot/calldata/memory origins), a batch
-experiment API that branches from one deep stop, bytecode parity checks against deployed
-runtimes, and structLog trace export. See [docs/mcp.md](docs/mcp.md) for the tool list
+`sevm mcp` serves the debugger over the Model Context Protocol (stdio). It provides
+windowed reads with explicit truncation, a stop report after every navigation, and a
+diff of what the last step changed. Operand provenance (`why N`) traces stack values
+through recorded opcodes. The server also checks compiled runtime bytecode against a
+deployment and exports structLog traces. See [docs/mcp.md](docs/mcp.md) for the tool list
 and client configuration.
 
 ### Compile a project
@@ -645,6 +657,7 @@ an `overrides` line so a stale environment variable cannot hide.
 | [docs/assembly.md](docs/assembly.md) | Yul builtins at the prompt, what is refused and why |
 | [docs/foundry.md](docs/foundry.md) | projects, library install, the build cache, cheatcodes |
 | [docs/mcp.md](docs/mcp.md) | the MCP server for AI clients: tools, data shapes, configuration |
+| [docs/headless.md](docs/headless.md) | REVM engine protocol for external frontends |
 
 ## Development
 
