@@ -333,6 +333,29 @@ def test_export_trace_structlog_shape(lab):
     assert written["written"] == written["total"]
 
 
+def test_structlog_stack_is_pre_opcode_and_bottom_first():
+    from sevm.session.provenance import Provenance
+
+    trace = Provenance()
+    trace.enabled = True
+    trace.record(
+        step=1,
+        pc=2,
+        opcode=1,
+        mnemonic="ADD",
+        depth=0,
+        gas_before=100,
+        gas_remaining=97,
+        mem_size=0,
+        before=[1, 2],
+        after=[3],
+    )
+    assert trace.structlog()["structLogs"][0]["stack"] == [
+        "0x" + "0" * 63 + "1",
+        "0x" + "0" * 63 + "2",
+    ]
+
+
 def test_parity_verdicts(lab):
     from sevm.compile import compare_runtime
 
