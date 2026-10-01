@@ -103,6 +103,7 @@ One debug session is active at a time; starting a new target replaces it.
 | `sevm_export_trace` | the recording as anvil/geth structLog JSON (to a file, or a windowed inline slice) |
 | `sevm_run_experiments` | branch-search from one deep stop: a list of `{set_stack, set_gas, write_memory, run_until_pc, read_stack}` experiments, each from a saved base checkpoint — 32 variants, one prefix |
 | `sevm_check_parity` | compare a compiled runtime against deployed bytecode; `sevm_start_session(reference_runtime_hex=...)` hard-fails on divergence |
+| `sevm_fork_info` | the active remote fork: source RPC, pinned block, chain id, RPC calls, materialized reads. Replay a transaction with `sevm_start_session(target="0x<txhash>", rpc_url=...)` |
 
 **Checkpoint semantics**: restoring reverts *everything* since the checkpoint
 (storage, balances, memory, stack, gas, cheat state) and discards checkpoints

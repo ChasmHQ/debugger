@@ -68,6 +68,7 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         timeout: float | None = None,
         reference_runtime_hex: str | None = None,
         provenance: bool = False,
+        rpc_url: str | None = None,
     ) -> dict:
         """Start debugging a target and stop at the first contract instruction.
 
@@ -378,6 +379,17 @@ def build_server(driver: DebugDriver | None = None) -> MCPServer:
         {items, total, base_restored}; order experiments that might finish the
         program last — a finished run cannot be restored."""
         return await _run(driver, "run_experiments", experiments, base_checkpoint)
+
+    # -- fork -------------------------------------------------------------------
+
+    @server.tool()
+    async def sevm_fork_info() -> dict:
+        """What the active fork is looking at: source RPC, pinned block, chain
+        id, RPC calls made, materialized reads — plus the divergence note
+        (writes are local and journaled; checkpoint restore rolls them back)."""
+        from ..fork import fork_info
+
+        return await anyio.to_thread.run_sync(lambda: dict(fork_info()))
 
     # -- parity ----------------------------------------------------------------
 

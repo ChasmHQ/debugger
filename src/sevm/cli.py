@@ -108,6 +108,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, default=120.0, help="seconds to wait for the first stop"
     )
     run.add_argument(
+        "--fork",
+        default=None,
+        metavar="URL[@BLOCK]",
+        help="fork a remote chain: driver scripts get it via `from sevm.fork import attach`",
+    )
+
+    replay = sub.add_parser(
+        "replay",
+        help="replay a remote transaction against its own pre-state, live",
+        description=(
+            "Fetch the transaction by hash, fork the chain at its parent block, "
+            "and re-execute the SIGNED transaction under the debugger — with "
+            "checkpoints, provenance and mutation, against real on-chain state."
+        ),
+    )
+    replay.add_argument("rpc_url", help="JSON-RPC endpoint (archive node for old blocks)")
+    replay.add_argument("tx_hash", help="transaction hash, 0x-prefixed")
+    replay.add_argument("-c", "--contracts", default=None)
+    replay.add_argument("--solc", default=None)
+    replay.add_argument("--console", action="store_true")
+    replay.add_argument("--optimize", action="store_true")
+    replay.add_argument("--no-mouse", action="store_true")
+    replay.add_argument("-x", "--exec", action="append", default=[], metavar="CMD")
+    replay.add_argument("--timeout", type=float, default=120.0)
+    run.add_argument(
         "-m",
         "--match",
         default=None,
@@ -353,6 +378,15 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         f"{', '.join(a.name for a in project.artifacts.values())}[/dim]",
         highlight=False,
     )
+    from .fork import set_pending_fork
+
+    fork_url = getattr(args, "fork", None)
+    fork_block: int | None = None
+    if fork_url:
+        url, _, block_text = fork_url.partition("@")
+        if block_text:
+            fork_block = int(block_text, 0)
+        set_pending_fork(url, fork_block)
     # `@path` script arguments are read from that file: payload hex outgrows what a
     # Windows command line (or console input) will carry. Same syntax as `run @file`.
     expanded = expand_file_args(list(args.args), " ".join(args.args))
@@ -540,8 +574,48 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "mcp":
         return cmd_mcp(args)
+    if args.command == "replay":
+        return cmd_replay(args)
     parser.print_help()
     return 1
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """`sevm replay RPC_URL TX_HASH` — live replay under the debugger."""
+    from rich.console import Console
+
+    from .fork import make_replay_driver
+    from .mcp_server import DebugDriver
+
+    console = Console()
+    try:
+        target, metadata = make_replay_driver(args.rpc_url, args.tx_hash)
+    except Exception as exc:
+        console.print(
+            f"[bold red]{type(exc).__name__}:[/bold red] {exc}", highlight=False
+        )
+        return 1
+    console.print(
+        f"[dim]forking {args.rpc_url} at block {metadata['block']} "
+        f"(chain {metadata.get('tx_type', 'legacy')} tx from {metadata.get('from')})[/dim]",
+        highlight=False,
+    )
+    driver = DebugDriver(timeout=args.timeout)
+    report = driver.start(
+        args.tx_hash,
+        rpc_url=args.rpc_url,
+        timeout=args.timeout,
+    )
+    if "error" in report:
+        console.print(f"[bold red]{report['error']}[/bold red]", highlight=False)
+        return 1
+    return _debug(
+        console,
+        driver._session.project,
+        target,
+        args,
+        foundry_mode=True,
+    )
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:

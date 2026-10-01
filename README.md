@@ -29,6 +29,7 @@
   - [Work without source](#work-without-source)
   - [Find a gadget](#find-a-gadget)
   - [Debug from an AI client (MCP)](#debug-from-an-ai-client-mcp)
+  - [Fork a remote chain / replay a transaction](#fork-a-remote-chain--replay-a-transaction)
   - [Compile a project](#compile-a-project)
   - [Check the environment](#check-the-environment)
 - [Reference](#reference)
@@ -576,6 +577,14 @@ experiment API that branches from one deep stop, bytecode parity checks against 
 runtimes, and structLog trace export. See [docs/mcp.md](docs/mcp.md) for the tool list
 and client configuration.
 
+### Fork a remote chain / replay a transaction
+
+`sevm replay RPC_URL 0x<TX_HASH>` re-executes a real on-chain transaction against its
+own pre-state, live under the debugger — checkpoints, `why`, mutation, all of it, on
+deployed code and storage fetched lazily from the endpoint. `sevm run --fork URL
+script.py` gives driver scripts the same fork via `from sevm.fork import attach`. See
+[docs/fork.md](docs/fork.md).
+
 ### Compile a project
 
 `sevm compile` runs the same build the debugger does and reports what it produced, which is
@@ -645,6 +654,7 @@ an `overrides` line so a stale environment variable cannot hide.
 | [docs/assembly.md](docs/assembly.md) | Yul builtins at the prompt, what is refused and why |
 | [docs/foundry.md](docs/foundry.md) | projects, library install, the build cache, cheatcodes |
 | [docs/mcp.md](docs/mcp.md) | the MCP server for AI clients: tools, data shapes, configuration |
+| [docs/fork.md](docs/fork.md) | forking a remote chain, replaying a transaction, divergence semantics |
 
 ## Development
 

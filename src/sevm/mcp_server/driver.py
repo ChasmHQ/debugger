@@ -82,6 +82,7 @@ class DebugDriver:
         timeout: float | None = None,
         reference_runtime_hex: str | None = None,
         provenance: bool = False,
+        rpc_url: str | None = None,
     ) -> dict[str, Any]:
         """Compile and start a debug target; replaces any existing session.
 
@@ -97,6 +98,13 @@ class DebugDriver:
             self.notices = []
             if timeout is not None:
                 self.timeout = timeout
+            if (
+                target.startswith("0x")
+                and len(target) == 66
+                and all(c in "0123456789abcdefABCDEF" for c in target[2:])
+            ):
+                self._target_kind = "replay"
+                return self._start_replay(target, rpc_url or "", provenance)
             if not os.path.isfile(target):
                 raise DriverError(f"no such file: {target}")
             self._target_path = target
@@ -177,6 +185,26 @@ class DebugDriver:
             restart_argv=expanded,
         )
 
+    def _start_replay(
+        self, tx_hash: str, rpc_url: str, provenance: bool
+    ) -> dict[str, Any]:
+        """Replay a remote transaction against its own pre-state, live."""
+        from ..compile import Project
+        from ..fork import make_replay_driver
+
+        driver, metadata = make_replay_driver(rpc_url, tx_hash)
+        empty = Project(sources={}, artifacts={}, asts={}, solc_version="0.8.28")
+        self._provenance_next = provenance
+        report = self._wire(
+            empty,
+            driver,
+            foundry_mode=True,
+            restart_factory=lambda _argv: driver,
+            skip_to_source=False,
+        )
+        report["replay"] = metadata
+        return report
+
     def _start_foundry(
         self,
         sol: str,
@@ -233,8 +261,9 @@ class DebugDriver:
         stop_functions: list[str] | None = None,
         restart_factory: Any = None,
         restart_argv: list[str] | None = None,
+        skip_to_source: bool = True,
     ) -> dict[str, Any]:
-        session = DebugSession(project)
+        session = DebugSession(project, skip_to_source=skip_to_source)
         session.foundry_mode = foundry_mode
         evaluator = Evaluator(project)
         session.set_eval_hook(make_eval_hook(evaluator))
