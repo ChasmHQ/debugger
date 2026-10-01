@@ -178,46 +178,6 @@ def cmd_asm(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult
     return proc.assemble(proc.substitute(source))
 
 
-# ==================================================================
-# checkpoints
-# ==================================================================
-
-
-def cmd_snap(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
-    """`snap [name]` — capture this stop: state, frames, journal, bookkeeping.
-
-    Restore later with `restore [name]` (default name: "last") and experiment
-    freely in between: stack/memory/storage writes, jumps, even a `continue`
-    that stops again — restore rolls all of it back without re-running the
-    script prefix.
-    """
-    proc.require_stop()
-    name = args[0] if args else "last"
-    info = proc.inspect("save_checkpoint", name)
-    return CommandResult().add(
-        f"[green]checkpoint {info['name']!r} saved[/green] "
-        f"[dim]({info['frames']} frame(s), {info['note']})[/dim]"
-    )
-
-
-def cmd_restore(proc: CommandProcessor, args: list[str], rest: str) -> CommandResult:
-    """`restore [name]` — roll the live run back to a `snap`.
-
-    Everything since the checkpoint is undone: storage, balances, memory,
-    stack, gas, cheat state. Restoring discards checkpoints saved after the
-    restored one, and only works while the frame stack is the one that was
-    saved — a checkpoint taken before a CALL cannot be restored from inside it.
-    """
-    proc.require_stop()
-    name = args[0] if args else "last"
-    info = proc.inspect("restore_checkpoint", name)
-    dropped = f", dropped {', '.join(info['dropped'])}" if info["dropped"] else ""
-    return CommandResult(mutated=True).add(
-        f"[yellow]restored checkpoint {info['name']!r}[/yellow] "
-        f"[dim]({info['frames']} frame(s), step {info['step']}{dropped})[/dim]"
-    )
-
-
 VERBS = {
     "set": cmd_set,
     "asm": cmd_asm,
@@ -226,6 +186,4 @@ VERBS = {
     "jump": cmd_jump,
     "reseat": cmd_reseat,
     "bind": cmd_bind,
-    "snap": cmd_snap,
-    "restore": cmd_restore,
 }

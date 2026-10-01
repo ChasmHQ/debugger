@@ -41,7 +41,7 @@ from .panes import (
 
 CSS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sevm.tcss")
 
-WELCOME = """[bold]sevm[/bold]  Solidity/EVM debugger on Py-EVM"""
+WELCOME = """[bold]sevm[/bold]  Solidity/EVM debugger on REVM"""
 
 
 class CommandDone(Message):
@@ -455,7 +455,7 @@ class SevmApp(App):
             return
         self.notify(f"copied {what} to the clipboard ({tool})", timeout=3)
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         self.exit()
 
     def on_unmount(self) -> None:

@@ -2,8 +2,8 @@
 
 By decision, the debugger attaches to the user's own script rather than owning the
 setup. The script drives web3 exactly as it already does; sevm compiles the contracts,
-patches Py-EVM process-wide, runs the script on the VM thread, and stops the first time
-execution enters code it recognises.
+temporarily supplies its REVM-backed Web3 provider, runs the script on the VM thread, and
+stops the first time execution enters code it recognises.
 
 Recognition is by bytecode, not by configuration: every contract under --contracts is
 compiled, and a deployed account's runtime code is matched against those artifacts with
@@ -56,7 +56,7 @@ def _run_script(path: str, argv: Sequence[str]):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sevm",
-        description="A gdb-style interactive Solidity/EVM debugger running on Py-EVM.",
+        description="A gdb-style interactive Solidity/EVM debugger.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -108,31 +108,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, default=120.0, help="seconds to wait for the first stop"
     )
     run.add_argument(
-        "--fork",
-        default=None,
-        metavar="URL[@BLOCK]",
-        help="fork a remote chain: driver scripts get it via `from sevm.fork import attach`",
-    )
-
-    replay = sub.add_parser(
-        "replay",
-        help="replay a remote transaction against its own pre-state, live",
-        description=(
-            "Fetch the transaction by hash, fork the chain at its parent block, "
-            "and re-execute the SIGNED transaction under the debugger — with "
-            "checkpoints, provenance and mutation, against real on-chain state."
-        ),
-    )
-    replay.add_argument("rpc_url", help="JSON-RPC endpoint (archive node for old blocks)")
-    replay.add_argument("tx_hash", help="transaction hash, 0x-prefixed")
-    replay.add_argument("-c", "--contracts", default=None)
-    replay.add_argument("--solc", default=None)
-    replay.add_argument("--console", action="store_true")
-    replay.add_argument("--optimize", action="store_true")
-    replay.add_argument("--no-mouse", action="store_true")
-    replay.add_argument("-x", "--exec", action="append", default=[], metavar="CMD")
-    replay.add_argument("--timeout", type=float, default=120.0)
-    run.add_argument(
         "-m",
         "--match",
         default=None,
@@ -162,7 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--force", action="store_true", help="recompile even if the cache has this build"
     )
-
     compile_cmd = sub.add_parser(
         "compile", help="compile contracts and report what sevm sees"
     )
@@ -327,6 +301,7 @@ def _warn_if_declined(console: Any, prepared: Any) -> None:
 
 def _run_python(console: Any, args: argparse.Namespace) -> int:
     from .foundry import prepare_project
+    from .provider import RevmWeb3Driver
 
     script = args.script
     contracts = _find_contracts_dir(script, args.contracts)
@@ -378,30 +353,25 @@ def _run_python(console: Any, args: argparse.Namespace) -> int:
         f"{', '.join(a.name for a in project.artifacts.values())}[/dim]",
         highlight=False,
     )
-    from .fork import set_pending_fork
-
-    fork_url = getattr(args, "fork", None)
-    fork_block: int | None = None
-    if fork_url:
-        url, _, block_text = fork_url.partition("@")
-        if block_text:
-            fork_block = int(block_text, 0)
-        set_pending_fork(url, fork_block)
     # `@path` script arguments are read from that file: payload hex outgrows what a
     # Windows command line (or console input) will carry. Same syntax as `run @file`.
     expanded = expand_file_args(list(args.args), " ".join(args.args))
     if isinstance(expanded, str):
         console.print(f"[bold red]{expanded}[/bold red]", highlight=False)
         return 1
-    target = _run_script(script, expanded)
+
+    def restart_factory(argv: list[str]) -> Any:
+        return RevmWeb3Driver(_run_script(script, argv))
+
+    target = restart_factory(expanded)
     return _debug(
         console,
         project,
         target,
         args,
-        foundry_mode=True,
-        restart_factory=lambda argv: _run_script(script, argv),
+        restart_factory=restart_factory,
         restart_argv=expanded,
+        session_class=DebugSession,
     )
 
 
@@ -409,7 +379,7 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     from .foundry import (
         compile_test,
         discover_tests,
-        make_tests_driver,
+        make_revm_tests_driver,
         prepare_project,
         select_tests,
     )
@@ -455,14 +425,14 @@ def _run_foundry(console: Any, args: argparse.Namespace) -> int:
     console.print(
         f"[dim]debugging {len(selected)} test(s): {names}[/dim]", highlight=False
     )
-    driver = make_tests_driver(project, selected)
+    driver = make_revm_tests_driver(project, selected)
     return _debug(
         console,
         project,
         driver,
         args,
-        foundry_mode=True,
         stop_functions=[f"{t.contract}.{t.function}" for t in selected],
+        session_class=DebugSession,
     )
 
 
@@ -471,10 +441,10 @@ def _debug(
     project: Any,
     target: Any,
     args: argparse.Namespace,
-    foundry_mode: bool,
     stop_functions: list[str] | None = None,
     restart_factory: Any = None,
     restart_argv: list[str] | None = None,
+    session_class: Any = DebugSession,
 ) -> int:
     """Shared tail: start the target on the VM thread and hand off to a frontend.
 
@@ -482,8 +452,7 @@ def _debug(
     past deployment and `setUp` and opens at the first one; `continue` then stops at each
     subsequent test in turn. `restart_factory` binds the `reset` / `run` commands.
     """
-    session = DebugSession(project)
-    session.foundry_mode = foundry_mode
+    session = session_class(project)
     evaluator = Evaluator(project)
     session.set_eval_hook(make_eval_hook(evaluator))
     if restart_factory is not None:
@@ -574,48 +543,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "mcp":
         return cmd_mcp(args)
-    if args.command == "replay":
-        return cmd_replay(args)
     parser.print_help()
     return 1
-
-
-def cmd_replay(args: argparse.Namespace) -> int:
-    """`sevm replay RPC_URL TX_HASH` — live replay under the debugger."""
-    from rich.console import Console
-
-    from .fork import make_replay_driver
-    from .mcp_server import DebugDriver
-
-    console = Console()
-    try:
-        target, metadata = make_replay_driver(args.rpc_url, args.tx_hash)
-    except Exception as exc:
-        console.print(
-            f"[bold red]{type(exc).__name__}:[/bold red] {exc}", highlight=False
-        )
-        return 1
-    console.print(
-        f"[dim]forking {args.rpc_url} at block {metadata['block']} "
-        f"(chain {metadata.get('tx_type', 'legacy')} tx from {metadata.get('from')})[/dim]",
-        highlight=False,
-    )
-    driver = DebugDriver(timeout=args.timeout)
-    report = driver.start(
-        args.tx_hash,
-        rpc_url=args.rpc_url,
-        timeout=args.timeout,
-    )
-    if "error" in report:
-        console.print(f"[bold red]{report['error']}[/bold red]", highlight=False)
-        return 1
-    return _debug(
-        console,
-        driver._session.project,
-        target,
-        args,
-        foundry_mode=True,
-    )
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:

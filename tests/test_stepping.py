@@ -131,22 +131,30 @@ def test_loop_iterates_with_next(bank):
     tx = contract.functions.deposit().transact(
         {"from": alice.address, "value": w3.to_wei(1, "ether"), "gas": 300_000}
     )
-    w3.eth.wait_for_transaction_receipt(tx)
+    receipt = w3.eth.wait_for_transaction_receipt(tx)
+    assert receipt.status == 1
+    assert contract.functions.history(0).call() == w3.to_wei(1, "ether")
+    assert contract.functions.sumHistory().call() == w3.to_wei(1, "ether")
 
     def txfn():
         contract.functions.sumHistory().call()
 
     dbg = Debugger(proj_, txfn)
     try:
+        assert dbg.snap.backtrace[0].name.startswith("Bank.sumHistory")
         body = line_of(proj_, "total += history[i];")
         hits = 0
+        visited = [(dbg.snap.pc, dbg.snap.line, dbg.snap.stop_reason)]
         for _ in range(24):
             event = dbg.step(StepMode.NEXT)
             if isinstance(event, Finished):
                 break
+            visited.append(
+                (event.snapshot.pc, event.snapshot.line, event.snapshot.stop_reason)
+            )
             if event.snapshot.line == body:
                 hits += 1
-        assert hits >= 1, "the loop body should be reached"
+        assert hits >= 1, f"the loop body should be reached: {visited}"
     finally:
         dbg.close()
 

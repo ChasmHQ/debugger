@@ -2,8 +2,8 @@
 
 Two stacks are in play at once and conflating them is the classic Solidity-debugger bug:
 
-  EVM frames       one per CALL/DELEGATECALL/STATICCALL/CREATE. Py-EVM gives us these for
-                   free because each one re-enters `apply_computation`.
+  EVM frames       one per CALL/DELEGATECALL/STATICCALL/CREATE, reported by the REVM
+                   inspector as execution enters and leaves frames.
   internal frames  Solidity `internal`/`private` calls, and modifiers. These compile to
                    JUMP, so the EVM depth never changes. The only signal is the source
                    map's `i`/`o` jump field.
@@ -15,9 +15,12 @@ program. `next` must step over both or it dives into helper functions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .srcmap import Location
+
+if TYPE_CHECKING:
+    from .locals import LocalVar
 
 # AST node types that own a source range we want to name.
 _FUNCTION_NODES = {"FunctionDefinition", "ModifierDefinition"}
@@ -219,7 +222,7 @@ class BacktraceRow:
 
 @dataclass
 class EvmFrame:
-    """One Py-EVM computation, plus the internal call stack running inside it."""
+    """One live EVM computation, plus the internal call stack running inside it."""
 
     depth: int
     address: bytes  # storage_address, the account whose storage is in play
@@ -238,9 +241,8 @@ class EvmFrame:
     computation: Any = None
     pc_map: Any = None
     disassembly: Any = None
-    # pc -> AST id of the local variable that instruction allocates. Empty when the code
-    # has no artifact, which is how a frame with no source degrades to no locals.
-    decl_pcs: dict[int, int] = field(default_factory=dict)
+    # pc -> local variable allocated by that instruction.
+    decl_pcs: dict[int, LocalVar] = field(default_factory=dict)
 
     @property
     def internal_depth(self) -> int:
@@ -251,7 +253,7 @@ class EvmFrame:
 
 
 def stack_int(value: Any) -> int:
-    """Py-EVM stack items are int OR bytes depending on how they were pushed."""
+    """Normalize an integer or byte-string stack word."""
     if isinstance(value, int):
         return value
     return int.from_bytes(value, "big")
@@ -271,8 +273,8 @@ class StackEntry:
 class FrameSnapshot:
     """Immutable picture of the VM at a pause, safe to hand to the UI thread.
 
-    Deliberately contains no Py-EVM objects. The UI renders this; anything it wants that
-    is not here it must ask the VM thread for with an inspect command.
+    Deliberately contains no live engine objects. The UI renders this; anything it wants
+    that is not here it must ask the VM thread for with an inspect command.
     """
 
     step: int
